@@ -51,3 +51,21 @@ def propose_fix_node(state: AgentState) -> AgentState:
     state["current_code"] = fixed_code
     state["iteration"] += 1
     return state
+
+
+# Node 3: Test the fix
+def test_fix_node(state: AgentState) -> AgentState:
+    passed, output = run_pytest(state["target_dir"])
+    state["test_output"] = output
+    state["test_passed"] = passed
+    return state
+
+# Define Router/Conditional Edges
+def router(state: AgentState):
+    if state["test_passed"]:
+        return "create_pr"
+    
+    if state["iteration"] < state["max_iterations"]:
+        return "propose_fix"  # Loop back to fix the code with the error logs!
+        
+    return "fail"
