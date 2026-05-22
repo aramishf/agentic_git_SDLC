@@ -1,7 +1,12 @@
 import os
 import subprocess
 from typing import TypedDict, List
+from google import genai
+from langgraph.graph import StateGraph, END
 
+# Initialize the Gemini client
+# The client automatically loads GEMINI_API_KEY or GOOGLE_API_KEY from environment variables
+client = genai.Client()
 
 # 1. State Definition (The memory of the agent)
 class AgentState(TypedDict):
@@ -14,6 +19,7 @@ class AgentState(TypedDict):
     iteration: int        # Counter for retry loops
     max_iterations: int   # Limit to prevent infinite loops
 
+
 # 2. Tool to check pytest
 def run_pytest(target_dir: str) -> tuple[bool, str]:
     """Runs pytest and returns (passed: bool, stdout/stderr: str)"""
@@ -22,51 +28,197 @@ def run_pytest(target_dir: str) -> tuple[bool, str]:
 
 
 # 3. LangGraph Nodes
-# Python function that accepts current STATE, performs actions (calling LLM) returns updated STATE
-# Node 1: Locate buggy file
 
 def locate_file_node(state: AgentState) -> AgentState:
-    # Here, we list all files in state['target_dir'] and present them to the LLM.
-    # We ask the LLM: "Given the issue: 'Calculate average crashes on empty lists', which file is buggy?"
-    # The LLM responds: "calculator.py"
-    # We load that file's contents into the state.
-    state["target_file"] = "calculator.py"  # In practice, LLM fills this.
+    """
+    Node 1: Analyze the issue description and select the buggy file to fix.
+    """
+    # 1. Get a list of files in the target directory dynamically
+    files = []
+    for root, _, filenames in os.walk(state["target_dir"]):
+        for filename in filenames:
+            if "__pycache__" in root or ".git" in root or filename.endswith('.pyc') or filename == "agent.py":
+                continue
+            rel_path = os.path.relpath(os.path.join(root, filename), state["target_dir"])
+            files.append(rel_path)
     
-    with open(os.path.join(state["target_dir"], state["target_file"]), "r") as f:
+    files_str = "\n".join(files)
+    
+    # 2. Build the prompt for the LLM
+    prompt = f"""
+You are an AI software engineer triaging a bug report.
+
+Bug Report: "{state['issue_description']}"
+
+Files in the repository:
+{files_str}
+
+Identify which file contains the bug or needs to be modified to fix this issue.
+Respond with ONLY the filename (including its path relative to target_dir). Do not write any markdown code blocks, explanation, or extra characters.
+Example: calculator.py
+"""
+    
+    # 3. Call the Gemini model
+    response = client.models.generate_content(
+        model='gemini-2.5-flash',
+        contents=prompt,
+    )
+    
+    # 4. Clean up the response and save it to State
+    target_file = response.text.strip().replace('`', '').replace('"', '').replace("'", "")
+    state["target_file"] = target_file
+    
+    # 5. Read the target file's current content and load into State
+    file_path = os.path.join(state["target_dir"], target_file)
+    with open(file_path, "r") as f:
         state["current_code"] = f.read()
         
+    print(f"[Node 1: Locate File] Analyzer decided to modify: {target_file}")
     return state
 
-# Node 2: Propose Code fix 
+
 def propose_fix_node(state: AgentState) -> AgentState:
-    # We prompt the LLM:
-    # "Here is the issue: {issue_description}. Here is the current code: {current_code}. 
-    #  If available, here is the error: {test_output}. Fix the code."
-    
-    # After receiving the response, we write the code back to the file:
-    fixed_code = "# Code written by the LLM..." 
-    
-    with open(os.path.join(state["target_dir"], state["target_file"]), "w") as f:
-        f.write(fixed_code)
+    """
+    Node 2: Propose code fix for the target file based on the issue and test feedback.
+    """
+    # Build feedback context if tests have run and failed previously
+    feedback_context = ""
+    if state.get("test_output"):
+        feedback_context = f"""
+Your previous attempt failed the tests with this output:
+{state['test_output']}
+Please analyze this error trace and fix the code accordingly.
+"""
         
-    state["current_code"] = fixed_code
+    # Build prompt for code generation
+    prompt = f"""
+You are an expert developer. Fix the bug in the file `{state['target_file']}`.
+
+Issue Description:
+{state['issue_description']}
+
+Current File Content:
+```python
+{state['current_code']}
+```
+{feedback_context}
+
+Provide the ENTIRE updated content of the file. 
+Wrap the python code in a single markdown code block starting with ```python.
+Do not output any explanation or commentary outside the code block.
+"""
+    
+    # Call Gemini model
+    response = client.models.generate_content(
+        model='gemini-2.5-flash',
+        contents=prompt,
+    )
+    
+    # Extract python code block from the markdown response
+    raw_text = response.text
+    if "```python" in raw_text:
+        new_code = raw_text.split("```python")[1].split("```")[0].strip()
+    elif "```" in raw_text:
+        new_code = raw_text.split("```")[1].split("```")[0].strip()
+    else:
+        new_code = raw_text.strip()
+        
+    # Write the new code back to the target file
+    file_path = os.path.join(state["target_dir"], state["target_file"])
+    with open(file_path, "w") as f:
+        f.write(new_code)
+        
+    state["current_code"] = new_code
     state["iteration"] += 1
+    
+    print(f"[Node 2: Propose Fix] Code written to {state['target_file']} (Iteration {state['iteration']})")
     return state
 
 
-# Node 3: Test the fix
 def test_fix_node(state: AgentState) -> AgentState:
+    """
+    Node 3: Run pytest on the target directory and capture the output.
+    """
+    print(f"[Node 3: Test Fix] Running tests in {state['target_dir']}...")
     passed, output = run_pytest(state["target_dir"])
     state["test_output"] = output
     state["test_passed"] = passed
+    
+    status = "PASSED" if passed else "FAILED"
+    print(f"[Node 3: Test Fix] Test status: {status}")
     return state
 
-# Define Router/Conditional Edges
+
+# 4. Define Router/Conditional Edges
 def router(state: AgentState):
+    """
+    Router: Decide whether to loop back for a fix, create a PR, or fail.
+    """
     if state["test_passed"]:
+        print("[Router] Tests passed! Transitioning to Success.")
         return "create_pr"
     
     if state["iteration"] < state["max_iterations"]:
-        return "propose_fix"  # Loop back to fix the code with the error logs!
+        print(f"[Router] Tests failed. Retrying (Iteration {state['iteration']}/{state['max_iterations']})...")
+        return "propose_fix"
         
+    print("[Router] Max iterations reached without passing tests. Transitioning to Failure.")
     return "fail"
+
+
+# 5. LangGraph Workflow Definition
+workflow = StateGraph(AgentState)
+
+# Add our nodes to the graph
+workflow.add_node("locate_file", locate_file_node)
+workflow.add_node("propose_fix", propose_fix_node)
+workflow.add_node("test_fix", test_fix_node)
+
+# Set entry point
+workflow.set_entry_point("locate_file")
+
+# Define edges
+workflow.add_edge("locate_file", "propose_fix")
+workflow.add_edge("propose_fix", "test_fix")
+
+# Define conditional edges from test_fix
+workflow.add_conditional_edges(
+    "test_fix",
+    router,
+    {
+        "create_pr": END,
+        "propose_fix": "propose_fix",
+        "fail": END
+    }
+)
+
+# Compile the workflow graph
+app = workflow.compile()
+
+
+if __name__ == "__main__":
+    # Ensure GEMINI_API_KEY is configured
+    if not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY"):
+        print("Warning: Neither GEMINI_API_KEY nor GOOGLE_API_KEY environment variable is set.")
+        print("Please set the environment variable, e.g.:")
+        print("  $env:GEMINI_API_KEY='your_api_key'")
+        
+    # Define the target directory (the folder containing calculator.py and tests)
+    target_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    initial_state = AgentState(
+        issue_description="Calculate average crashes on empty lists",
+        target_dir=target_dir,
+        target_file="",
+        current_code="",
+        test_output="",
+        test_passed=False,
+        iteration=0,
+        max_iterations=3
+    )
+    
+    print("Starting agent graph execution...")
+    final_state = app.invoke(initial_state)
+    print("\n--- Execution Finished ---")
+    print(f"Final Test Passed: {final_state['test_passed']}")
+    print(f"Final Iteration: {final_state['iteration']}")
