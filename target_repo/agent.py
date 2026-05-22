@@ -2,6 +2,7 @@ import os
 import subprocess
 from typing import TypedDict, List
 
+
 # 1. State Definition (The memory of the agent)
 class AgentState(TypedDict):
     issue_description: str
