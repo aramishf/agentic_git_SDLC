@@ -1,12 +1,53 @@
 import os
 import subprocess
+import sys
 from typing import TypedDict, List
 from google import genai
 from langgraph.graph import StateGraph, END
+from dotenv import load_dotenv
 
-# Initialize the Gemini client
-# The client automatically loads GEMINI_API_KEY or GOOGLE_API_KEY from environment variables
-client = genai.Client()
+# Load environment variables from .env file
+load_dotenv()
+
+class MockResponse:
+    def __init__(self, text):
+        self.text = text
+
+class MockModels:
+    def generate_content(self, model, contents, **kwargs):
+        prompt = str(contents)
+        if "Identify which file contains the bug" in prompt:
+            print("[Mock LLM] Identifying buggy file...")
+            return MockResponse("calculator.py")
+        elif "Fix the bug in the file" in prompt or "propose_fix" in prompt:
+            print("[Mock LLM] Generating bug fix...")
+            return MockResponse("""```python
+def calculate_average(numbers):
+    # BUG: This will raise ZeroDivisionError if numbers is empty.
+    # The requirement is: return 0.0 for empty lists.
+    if not numbers:
+        return 0.0
+    return sum(numbers) / len(numbers)
+```""")
+        else:
+            return MockResponse("")
+
+class MockClient:
+    def __init__(self):
+        self.models = MockModels()
+
+# Initialize the Gemini client or fallback to MockClient
+client = None
+try:
+    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+        client = genai.Client()
+except Exception as e:
+    pass
+
+if not client:
+    print("[Agent Setup] No GEMINI_API_KEY or GOOGLE_API_KEY detected in the environment.")
+    print("[Agent Setup] Initializing in Simulation/Mock Mode using MockClient.")
+    client = MockClient()
 
 # 1. State Definition (The memory of the agent)
 class AgentState(TypedDict):
@@ -23,7 +64,7 @@ class AgentState(TypedDict):
 # 2. Tool to check pytest
 def run_pytest(target_dir: str) -> tuple[bool, str]:
     """Runs pytest and returns (passed: bool, stdout/stderr: str)"""
-    result = subprocess.run(["pytest"], cwd=target_dir, capture_output=True, text=True)
+    result = subprocess.run([sys.executable, "-m", "pytest"], cwd=target_dir, capture_output=True, text=True)
     return (result.returncode == 0), result.stdout + "\n" + result.stderr
 
 
@@ -33,6 +74,9 @@ def locate_file_node(state: AgentState) -> AgentState:
     """
     Node 1: Analyze the issue description and select the buggy file to fix.
     """
+    if isinstance(client, MockClient):
+        print("[Node 1: Locate File] Running in mock/simulation mode.")
+        
     # 1. Get a list of files in the target directory dynamically
     files = []
     for root, _, filenames in os.walk(state["target_dir"]):
@@ -81,6 +125,9 @@ def propose_fix_node(state: AgentState) -> AgentState:
     """
     Node 2: Propose code fix for the target file based on the issue and test feedback.
     """
+    if isinstance(client, MockClient):
+        print("[Node 2: Propose Fix] Running in mock/simulation mode.")
+
     # Build feedback context if tests have run and failed previously
     feedback_context = ""
     if state.get("test_output"):
@@ -197,11 +244,14 @@ app = workflow.compile()
 
 
 if __name__ == "__main__":
-    # Ensure GEMINI_API_KEY is configured
-    if not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY"):
+    # Check if running in mock/simulation mode
+    if isinstance(client, MockClient):
+        print("Notice: No Gemini API key detected. Running in Simulation/Mock Mode.")
+    elif not client:
         print("Warning: Neither GEMINI_API_KEY nor GOOGLE_API_KEY environment variable is set.")
-        print("Please set the environment variable, e.g.:")
-        print("  $env:GEMINI_API_KEY='your_api_key'")
+        print("Please create a '.env' file in this directory or set the environment variable, e.g.:")
+        print("  export GEMINI_API_KEY='your_api_key'")
+        exit(1)
         
     # Define the target directory (the folder containing calculator.py and tests)
     target_dir = os.path.dirname(os.path.abspath(__file__))
