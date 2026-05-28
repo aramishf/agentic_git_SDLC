@@ -256,8 +256,11 @@ if __name__ == "__main__":
     # Define the target directory (the folder containing calculator.py and tests)
     target_dir = os.path.dirname(os.path.abspath(__file__))
     
+    # Read issue description dynamically from environment if set (e.g. in GitHub Actions)
+    issue_description = os.environ.get("ISSUE_BODY") or os.environ.get("ISSUE_TITLE") or "Calculate average crashes on empty lists"
+    
     initial_state = AgentState(
-        issue_description="Calculate average crashes on empty lists",
+        issue_description=issue_description,
         target_dir=target_dir,
         target_file="",
         current_code="",
