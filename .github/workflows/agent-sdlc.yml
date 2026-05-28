@@ -32,7 +32,7 @@ jobs:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
         run: |
-          python target_repo/agent.py
+          python agent.py
 
       - name: Create Pull Request with Bug Fix
         uses: peter-evans/create-pull-request@v6
