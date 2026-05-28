@@ -23,7 +23,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install google-genai langgraph python-dotenv pytest
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Run SDLC Agent
         env:
