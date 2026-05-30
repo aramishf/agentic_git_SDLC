@@ -61,10 +61,15 @@ class AgentState(TypedDict):
     max_iterations: int   # Limit to prevent infinite loops
 
 
-# 2. Tool to check pytest
-def run_pytest(target_dir: str) -> tuple[bool, str]:
-    """Runs pytest and returns (passed: bool, stdout/stderr: str)"""
-    result = subprocess.run([sys.executable, "-m", "pytest"], cwd=target_dir, capture_output=True, text=True)
+# 2. Tool to run repository verification tests
+def run_verification_tests(target_dir: str) -> tuple[bool, str]:
+    """Runs verification tests and returns (passed: bool, stdout/stderr: str)"""
+    test_cmd_str = os.environ.get("TEST_COMMAND") or "pytest"
+    test_cmd = test_cmd_str.split()
+    if len(test_cmd) > 0 and test_cmd[0] == "pytest":
+        test_cmd = [sys.executable, "-m", "pytest"]
+    print(f"[Verification] Running test command: {' '.join(test_cmd)} in {target_dir}")
+    result = subprocess.run(test_cmd, cwd=target_dir, capture_output=True, text=True)
     return (result.returncode == 0), result.stdout + "\n" + result.stderr
 
 
@@ -184,10 +189,10 @@ Do not output any explanation or commentary outside the code block.
 
 def test_fix_node(state: AgentState) -> AgentState:
     """
-    Node 3: Run pytest on the target directory and capture the output.
+    Node 3: Run verification tests on the target directory and capture the output.
     """
     print(f"[Node 3: Test Fix] Running tests in {state['target_dir']}...")
-    passed, output = run_pytest(state["target_dir"])
+    passed, output = run_verification_tests(state["target_dir"])
     state["test_output"] = output
     state["test_passed"] = passed
     
@@ -253,8 +258,8 @@ if __name__ == "__main__":
         print("  export GEMINI_API_KEY='your_api_key'")
         exit(1)
         
-    # Define the target directory (the folder containing calculator.py and tests)
-    target_dir = os.path.dirname(os.path.abspath(__file__))
+    # Define the target directory (use GITHUB_WORKSPACE in GitHub Action runners, or script directory locally)
+    target_dir = os.environ.get("GITHUB_WORKSPACE") or os.path.dirname(os.path.abspath(__file__))
     
     # Read issue description dynamically from environment if set (e.g. in GitHub Actions)
     issue_description = os.environ.get("ISSUE_BODY") or os.environ.get("ISSUE_TITLE") or "Calculate average crashes on empty lists"
