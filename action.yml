@@ -1,0 +1,33 @@
+name: 'AI SDLC Agent'
+description: 'Locates issues, proposes fixes, runs verification tests, and loops automatically'
+inputs:
+  gemini_api_key:
+    description: 'Gemini/Google API key to invoke the LLM model'
+    required: true
+  test_command:
+    description: 'Command to verify repository tests (e.g. pytest, npm test)'
+    required: false
+    default: 'pytest'
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install -r ${{ github.action_path }}/requirements.txt
+
+    - name: Run AI Agent
+      shell: bash
+      env:
+        GEMINI_API_KEY: ${{ inputs.gemini_api_key }}
+        TEST_COMMAND: ${{ inputs.test_command }}
+        ISSUE_BODY: ${{ github.event.issue.body }}
+        ISSUE_TITLE: ${{ github.event.issue.title }}
+      run: |
+        python ${{ github.action_path }}/agent.py
