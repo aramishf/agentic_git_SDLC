@@ -29,5 +29,7 @@ runs:
         TEST_COMMAND: ${{ inputs.test_command }}
         ISSUE_BODY: ${{ github.event.issue.body }}
         ISSUE_TITLE: ${{ github.event.issue.title }}
+        ISSUE_NUMBER: ${{ github.event.issue.number }}
+        GITHUB_TOKEN: ${{ github.token }}
       run: |
         python ${{ github.action_path }}/agent.py
